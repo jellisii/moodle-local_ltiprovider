@@ -128,23 +128,21 @@ function sendOAuthParamsPOST($method, $endpoint, $oauth_consumer_key, $oauth_con
     // Pass this back up "out of band" for debugging
     global $LastOAuthBodyBaseString;
     $LastOAuthBodyBaseString = $acc_req->get_signature_base_string();
-    // echo($LastOAuthBodyBaseString."\m");
-
-    $header = $acc_req->to_header();
-    $header = $header . "\r\nContent-type: " . $content_type . "\r\n";
-
-    $params = array('http' => array(
-        'method' => 'POST',
-        'content' => $body,
-    'header' => $header
-        ));
-    $ctx = stream_context_create($params);
-    $fp = @fopen($endpoint, 'rb', false, $ctx);
-    if (!$fp) {
-        throw new \Exception("Problem with $endpoint, $php_errormsg");
-    }
-    $response = @stream_get_contents($fp);
-    if ($response === false) {
+    
+    $header_array = array(
+        "Content-type: \"$content_type\"",
+        $acc_req->to_header()
+    );
+    $curl = curl_init($endpoint);
+    curl_setopt($curl, CURLOPT_HEADER, true);
+    curl_setopt($curl, CURLOPT_HTTPHEADER, $header_array);
+    curl_setopt($curl, CURLOPT_POSTFIELDS, $body);
+    curl_setopt($curl, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($curl, CURLOPT_FOLLOWLOCATION, true);
+    curl_setopt($curl, CURLOPT_CUSTOMREQUEST, "POST");
+    curl_setopt($curl, CURLOPT_POSTREDIR, 3);
+    $response = curl_exec($curl);
+    if (curl_errno($curl)) {
         throw new \Exception("Problem reading data from $endpoint, $php_errormsg");
     }
     return $response;

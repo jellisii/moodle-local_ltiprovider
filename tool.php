@@ -230,7 +230,13 @@ if ($context->valid) {
     if (class_exists('textlib')) {
         $textlib = new textlib();
     } else {
-        $textlib = textlib_get_instance();
+	try {
+            // for older moodle instances
+            $textlib = textlib_get_instance();
+        } catch (Exception $e) {
+            // updated to use new core_text lib as required by Moodle 2.9
+            $textlib = new core_text;
+        }
     }
 
     foreach ($_POST as $key => $value) {
@@ -447,6 +453,11 @@ if ($context->valid) {
             $DB->set_field('local_ltiprovider_user', 'serviceurl', $serviceurl, array('id' => $userlog->id));
         }
         $DB->set_field('local_ltiprovider_user', 'lastaccess', time(), array('id' => $userlog->id));
+	// need to send a grade if its set.
+        if(intval($userlog->lastgrade) > 0) {
+            require_once($CFG->dirroot.'/local/ltiprovider/lib.php');
+            $grade_send_result = local_ltiprovider_send_grade($tool, $userlog, time());
+        }
     } else {
         // These data is needed for sending backup outcomes (aka grades)
         $userlog = new stdClass();

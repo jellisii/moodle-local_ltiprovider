@@ -158,7 +158,7 @@ function local_ltiprovider_add_tool($tool) {
     if (!isset($tool->syncmembers)) {
         $tool->syncmembers = 0;
     }
-    
+
     $tool->id = $DB->insert_record('local_ltiprovider', $tool);
 
     return $tool->id;
@@ -269,80 +269,16 @@ function local_ltiprovider_cron() {
                         if ($user->lastsync > $tool->lastsync) {
                             mtrace("Skipping user {$user->id}");
                             continue;
-                        }
-
-                        $grade = false;
-                        if ($context = $DB->get_record('context', array('id' => $tool->contextid))) {
-                            if ($context->contextlevel == CONTEXT_COURSE) {
-
-                                if ($grade = grade_get_course_grade($user->userid, $tool->courseid)) {
-                                    $grademax = floatval($grade->item->grademax);
-                                    $grade = $grade->grade;
-                                }
-                            } else if ($context->contextlevel == CONTEXT_MODULE) {
-
-                                $cm = get_coursemodule_from_id(false, $context->instanceid, 0, false, MUST_EXIST);
-                                $grades = grade_get_grades($cm->course, 'mod', $cm->modname, $cm->instance, $user->userid);
-                                if (empty($grades->items[0]->grades)) {
-                                    $grade = false;
-                                } else {
-                                    $grade = reset($grades->items[0]->grades);
-                                    if (!empty($grade->item)) {
-                                        $grademax = floatval($grade->item->grademax);
-                                    } else {
-                                        $grademax = floatval($grades->items[0]->grademax);
-                                    }
-                                    $grade = $grade->grade;
-                                }
-                            }
-
-                            if ( $grade === false || $grade === NULL || strlen($grade) < 1) continue;
-
-                            // No need to be dividing by zero
-                            if ( $grademax == 0.0 ) $grademax = 100.0;
-
-                            // TODO: Make lastgrade should be float or string - but it is integer so we truncate
-                            // TODO: Then remove those intval() calls
-
-                            // Don't double send
-                            if ( intval($grade) == $user->lastgrade ) continue;
-
-                            // We sync with the external system only when the new grade differs with the previous one
-                            // TODO - Global setting for check this
-                            if ($grade > 0 and $grade <= $grademax) {
-                                $float_grade = $grade / $grademax;
-                                $body = local_ltiprovider_create_service_body($user->sourceid, $float_grade);
-
-                                try {
-                                    $response = ltiprovider\sendOAuthBodyPOST('POST', $user->serviceurl, $user->consumerkey, $user->consumersecret, 'application/xml', $body);
-                                } catch (Exception $e) {
-                                    mtrace(" ".$e->getMessage());
-                                    $error_count = $error_count + 1;
-                                    continue;
-                                }
-
-                                // TODO - Check for errors in $retval in a correct way (parsing xml)
-                                if (strpos(strtolower($response), 'success') !== false) {
-
-                                    $DB->set_field('local_ltiprovider_user', 'lastsync', $timenow, array('id' => $user->id));
-                                    $DB->set_field('local_ltiprovider_user', 'lastgrade', intval($grade), array('id' => $user->id));
-                                    mtrace(" User grade sent to remote system. userid: $user->userid grade: $float_grade");
-                                    $send_count = $send_count + 1;
-                                } else {
-                                    mtrace(" User grade send failed: ".$response);
-                                    $error_count = $error_count + 1;
-                                }
-                            } else {
-                                mtrace(" User grade out of range: grade = ".$grade);
-                                $error_count = $error_count + 1;
-                            }
                         } else {
-                            mtrace(" Invalid context: contextid = ".$tool->contextid);
+                            list($result, $message) = local_ltiprovider_send_grade($tool, $user, $timenow);
+                            if ($result === true) {
+                                $send_count++;
+                            } else {
+                                $error_count++;
+                            }
                         }
                     }
                 }
-                mtrace(" Completed sync tool id $tool->id course id $tool->courseid users=$user_count sent=$send_count errors=$error_count");
-                $DB->set_field('local_ltiprovider', 'lastsync', $timenow, array('id' => $tool->id));
             }
         }
     }
@@ -561,5 +497,97 @@ function local_ltiprovider_cron() {
         }
     }
     mtrace("$counter profile images updated");
+}
+
+function local_ltiprovider_send_grade ($tool, $user, $timenow) {
+    // I've set this up this way to potentially use the Event API to trigger a grade send automatically.
+    // TODO:  Probably don't need all of these...
+    global $DB, $CFG, $PAGE;
+    require_once($CFG->dirroot."/local/ltiprovider/locallib.php");
+    require_once($CFG->dirroot."/local/ltiprovider/ims-blti/OAuth.php");
+    require_once($CFG->dirroot."/local/ltiprovider/ims-blti/OAuthBody.php");
+    require_once($CFG->libdir.'/gradelib.php');
+    require_once($CFG->dirroot.'/grade/querylib.php');
+    $PAGE->set_context(context_system::instance());
+    $grade = false;
+    if ($context = $DB->get_record('context', array('id' => $tool->contextid))) {
+        if ($context->contextlevel == CONTEXT_COURSE) {
+
+            if ($grade = grade_get_course_grade($user->userid, $tool->courseid)) {
+                $grademax = floatval($grade->item->grademax);
+                $grade = $grade->grade;
+            }
+        } else if ($context->contextlevel == CONTEXT_MODULE) {
+
+            $cm = get_coursemodule_from_id(false, $context->instanceid, 0, false, MUST_EXIST);
+            $grades = grade_get_grades($cm->course, 'mod', $cm->modname, $cm->instance, $user->userid);
+            if (empty($grades->items[0]->grades)) {
+                $grade = false;
+            } else {
+                $grade = reset($grades->items[0]->grades);
+                if (!empty($grade->item)) {
+                    $grademax = floatval($grade->item->grademax);
+                } else {
+                    $grademax = floatval($grades->items[0]->grademax);
+                }
+                $grade = $grade->grade;
+            }
+        }
+
+        if ( $grade === false || $grade === NULL || strlen($grade) < 1) continue;
+
+        // No need to be dividing by zero
+        if ( $grademax == 0.0 ) $grademax = 100.0;
+
+        // TODO: Make lastgrade should be float or string - but it is integer so we truncate
+        // TODO: Then remove those intval() calls
+
+        // Don't double send
+        // TODO:  toggle this.  There are places where replacing the grade
+        // every time is desirable.  This should probably be on the tool
+        // level.  
+        //if ( intval($grade) == $user->lastgrade ) continue;
+
+        // We sync with the external system only when the new grade differs with the previous one
+        // TODO - Global setting for check this
+        if ($grade > 0 and $grade <= $grademax) {
+            $float_grade = $grade / $grademax;
+            $body = local_ltiprovider_create_service_body($user->sourceid, $float_grade);
+
+            try {
+                $response = ltiprovider\sendOAuthBodyPOST('POST', $user->serviceurl, $user->consumerkey, $user->consumersecret, 'application/xml', $body);
+            } catch (Exception $e) {
+                mtrace(" ".$e->getMessage());
+                $error_count = $error_count + 1;
+                continue;
+            }
+
+            // Checking the return value and properly coping with it.
+            $xml = simplexml_load_string(str_replace('xmlns', 'ns', $response));
+            $imsx_codeMajor = $xml->xpath(
+              '/imsx_POXEnvelopeResponse/imsx_POXHeader' .
+              '/imsx_POXResponseHeaderInfo/imsx_statusInfo/imsx_codeMajor'
+            );
+            $imsx_description = $xml->xpath(
+              '/imsx_POXEnvelopeResponse/imsx_POXHeader' .
+              '/imsx_POXResponseHeaderInfo/imsx_statusInfo/imsx_description'
+            );
+            mtrace(" Remote system description was " . $imsx_description[0]);
+            if(strtolower($imsx_codeMajor[0]) === 'success') {
+                $DB->set_field('local_ltiprovider_user', 'lastsync', $timenow, array('id' => $user->id));
+                $DB->set_field('local_ltiprovider_user', 'lastgrade', intval($grade), array('id' => $user->id));
+                mtrace(" User grade sent to remote system. userid: $user->userid grade: $float_grade");
+                return array(true, "Successfully set grade");
+            } else {
+                mtrace(" User grade send failed: ".$response);
+                $error_count = $error_count + 1;
+            }
+        } else {
+            mtrace(" User grade out of range: grade = ".$grade);
+            $error_count = $error_count + 1;
+        }
+    } else {
+        mtrace(" Invalid context: contextid = ".$tool->contextid);
+    }
 }
 

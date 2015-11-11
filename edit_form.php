@@ -105,7 +105,13 @@ class edit_form extends moodleform {
         if (class_exists('textlib')) {
             $textlib = new textlib();
         } else {
+	    try {
+            // for older moodle instances
             $textlib = textlib_get_instance();
+        } catch (Exception $e) {
+            // updated to use new core_text lib as required by Moodle 2.9
+            $textlib = new core_text;
+        }
         }
 
         $choices = $textlib->get_encodings();
